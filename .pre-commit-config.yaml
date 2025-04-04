@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-xml
+
+  - repo: https://github.com/ejba/pre-commit-maven
+    rev: v0.3.4
+    hooks:
+      - id: maven-checkstyle
+      - id: maven-spotless-apply
+
+  - repo: local
+    hooks:
+      - id: spotbugs
+        name: SpotBugs
+        language: system
+        entry: mvn -B spotbugs:check
+        pass_filenames: false
+        files: \.java$
