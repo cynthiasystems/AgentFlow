@@ -16,11 +16,12 @@ public abstract class Task implements Runnable {
   String id = UUID.randomUUID().toString();
 
   @Getter @NonFinal private volatile TaskState state = TaskState.CREATED;
-  @NonFinal long lastProcessingTime;
 
-  @NonFinal
+  @NonFinal long lastActiveTime;
+
   @Getter(AccessLevel.PROTECTED)
-  long currentWaitingTime;
+  @NonFinal
+  long lastWaitingTime;
 
   @NonFinal Thread thread;
 
@@ -33,6 +34,7 @@ public abstract class Task implements Runnable {
     beforeStart();
     state = TaskState.STARTED;
     thread = new Thread(this, id());
+    thread.setDaemon(true);
     thread.start();
   }
 
@@ -49,6 +51,7 @@ public abstract class Task implements Runnable {
       }
     }
     afterStop();
+    lastActiveTime = System.currentTimeMillis();
   }
 
   /**
@@ -74,11 +77,11 @@ public abstract class Task implements Runnable {
       initialize();
       while (state == TaskState.STARTED) {
         if (shouldProcess()) {
+          // How long since the last active time
+          final long currentTime = System.currentTimeMillis();
+          lastWaitingTime = currentTime - lastActiveTime;
+          lastActiveTime = currentTime;
           process();
-          lastProcessingTime = System.currentTimeMillis();
-          currentWaitingTime = 0;
-        } else {
-          currentWaitingTime = Math.max(0, System.currentTimeMillis() - lastProcessingTime);
         }
         final long sleepTime = calculateSleepTime();
         if (sleepTime > 0) {

@@ -8,10 +8,10 @@ public abstract class AdaptiveTimingTask extends Task {
 
   @Override
   protected long calculateSleepTime() {
-    if (currentWaitingTime() == 0) {
+    if (lastWaitingTime() == 0) {
       return (long) estimatedSleepTime;
     }
-    estimatedSleepTime = alpha * currentWaitingTime() + (1 - alpha) * estimatedSleepTime;
+    estimatedSleepTime = alpha * lastWaitingTime() + (1 - alpha) * estimatedSleepTime;
     return (long) estimatedSleepTime;
   }
 }

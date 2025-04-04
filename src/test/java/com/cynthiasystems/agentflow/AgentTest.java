@@ -9,11 +9,11 @@ import com.cynthiasystems.agentflow.tasks.examples.CounterTask;
 
 import lombok.SneakyThrows;
 
-class AgentTest {
+public class AgentTest {
 
   @Test
   @SneakyThrows
-  void testAgentStartsAndStopsAllTasks() {
+  public void testAgentStartsAndStopsAllTasks() {
     // Create test tasks
     CounterTask task1 = new CounterTask();
     CounterTask task2 = new CounterTask();
@@ -62,7 +62,7 @@ class AgentTest {
   }
 
   @Test
-  void testEmptyAgent() {
+  public void testEmptyAgent() {
     final Agent agent = Agent.builder().build();
     agent.start();
     agent.stop();
@@ -70,7 +70,7 @@ class AgentTest {
 
   @Test
   @SneakyThrows
-  void testAgentWithTaskList() {
+  public void testAgentWithTaskList() {
     // Test the tasks() method that takes a list instead of individual task() calls
     CounterTask task1 = new CounterTask();
     CounterTask task2 = new CounterTask();
@@ -92,7 +92,7 @@ class AgentTest {
 
   @Test
   @SneakyThrows
-  void testMultipleStartStop() {
+  public void testMultipleStartStop() {
     // Create test task
     CounterTask task = new CounterTask();
 
@@ -133,7 +133,7 @@ class AgentTest {
       for (Task task : tasks) {
         if (task.isThreadAlive()) {
           allTerminated = false;
-          Thread.sleep(10); // Small sleep between checks
+          Thread.sleep(10);
           break;
         }
       }

@@ -53,7 +53,7 @@ public class TaskTest {
     // Check waiting time behavior - should be non-zero now that we hit the limit
     // and processing is no longer happening
     Thread.sleep(50); // Give time for waiting time to accumulate
-    assertTrue(task.currentWaitingTime() > 0);
+    assertTrue(task.lastWaitingTime() > 0);
 
     // Test changing behavior mid-execution
     task.shouldProcess(true); // Make it process again (redundant here but tests setter)
