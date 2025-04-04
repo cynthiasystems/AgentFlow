@@ -11,13 +11,16 @@ import lombok.experimental.NonFinal;
 
 @Accessors(fluent = true, chain = true)
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
-public abstract class AutonomousTask implements Runnable {
+public abstract class Task implements Runnable {
   @Getter(AccessLevel.PUBLIC)
   String id = UUID.randomUUID().toString();
 
-  @Getter(AccessLevel.PUBLIC)
+  @Getter @NonFinal private volatile TaskState state = TaskState.CREATED;
+  @NonFinal long lastProcessingTime;
+
   @NonFinal
-  private volatile TaskState state = TaskState.CREATED;
+  @Getter(AccessLevel.PROTECTED)
+  long currentWaitingTime;
 
   @NonFinal Thread thread;
 
@@ -28,6 +31,7 @@ public abstract class AutonomousTask implements Runnable {
       return;
     }
     beforeStart();
+    state = TaskState.STARTED;
     thread = new Thread(this, id());
     thread.start();
   }
@@ -38,6 +42,11 @@ public abstract class AutonomousTask implements Runnable {
     state = TaskState.STOPPED;
     if (thread != null) {
       thread.interrupt();
+      try {
+        thread.join(200);
+      } catch (final InterruptedException e) {
+        // Ignore
+      }
     }
     afterStop();
   }
@@ -66,11 +75,18 @@ public abstract class AutonomousTask implements Runnable {
       while (state == TaskState.STARTED) {
         if (shouldProcess()) {
           process();
+          lastProcessingTime = System.currentTimeMillis();
+          currentWaitingTime = 0;
+        } else {
+          currentWaitingTime = Math.max(0, System.currentTimeMillis() - lastProcessingTime);
         }
-        try {
-          Thread.sleep(calculateSleepTime());
-        } catch (final InterruptedException e) {
-          thread.interrupt();
+        final long sleepTime = calculateSleepTime();
+        if (sleepTime > 0) {
+          try {
+            Thread.sleep(sleepTime);
+          } catch (final InterruptedException e) {
+            thread.interrupt();
+          }
         }
       }
     } finally {
