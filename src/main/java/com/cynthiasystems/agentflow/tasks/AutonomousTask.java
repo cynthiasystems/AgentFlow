@@ -15,17 +15,19 @@ public abstract class AutonomousTask implements Runnable {
   @Getter(AccessLevel.PUBLIC)
   String id = UUID.randomUUID().toString();
 
-  @NonFinal volatile boolean running;
+  @Getter(AccessLevel.PUBLIC)
+  @NonFinal
+  private volatile TaskState state = TaskState.CREATED;
+
   @NonFinal Thread thread;
 
   /** Starts the agent in its own thread. */
   @Synchronized
   public void start() {
-    if (thread != null && thread.isAlive()) {
+    if (state == TaskState.STARTED) {
       return;
     }
     beforeStart();
-    running = true;
     thread = new Thread(this, id());
     thread.start();
   }
@@ -33,7 +35,7 @@ public abstract class AutonomousTask implements Runnable {
   /** Stops the agent gracefully. */
   @Synchronized
   public void stop() {
-    running = false;
+    state = TaskState.STOPPED;
     if (thread != null) {
       thread.interrupt();
     }
@@ -55,10 +57,13 @@ public abstract class AutonomousTask implements Runnable {
   }
 
   @Override
-  public void run() {
+  public final void run() {
     try {
+      if (state != TaskState.STARTED) {
+        throw new IllegalStateException("Task must be started using start() method");
+      }
       initialize();
-      while (running) {
+      while (state == TaskState.STARTED) {
         if (shouldProcess()) {
           process();
         }
