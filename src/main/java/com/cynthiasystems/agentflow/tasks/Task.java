@@ -36,6 +36,7 @@ public abstract class Task implements Runnable {
     thread = new Thread(this, id());
     thread.setDaemon(true);
     thread.start();
+    lastActiveTime = System.currentTimeMillis();
   }
 
   /** Stops the agent gracefully. */
@@ -76,10 +77,9 @@ public abstract class Task implements Runnable {
       }
       initialize();
       while (state == TaskState.STARTED) {
+        final long currentTime = System.currentTimeMillis();
+        lastWaitingTime = currentTime - lastActiveTime;
         if (shouldProcess()) {
-          // How long since the last active time
-          final long currentTime = System.currentTimeMillis();
-          lastWaitingTime = currentTime - lastActiveTime;
           lastActiveTime = currentTime;
           process();
         }
