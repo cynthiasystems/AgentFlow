@@ -11,7 +11,7 @@ import lombok.experimental.NonFinal;
 @Accessors(fluent = true)
 @Setter
 @FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
-public class TrueTask extends Task {
+public class TestTrueTask extends Task {
   @NonFinal boolean result;
 
   @Override

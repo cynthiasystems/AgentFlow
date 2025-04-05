@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 
 import com.cynthiasystems.agentflow.tasks.Task;
-import com.cynthiasystems.agentflow.tasks.examples.CounterTask;
+import com.cynthiasystems.agentflow.tasks.examples.TestCounterTask;
 
 import lombok.SneakyThrows;
 
@@ -15,9 +15,9 @@ public class AgentTest {
   @SneakyThrows
   public void testAgentStartsAndStopsAllTasks() {
     // Create test tasks
-    CounterTask task1 = new CounterTask();
-    CounterTask task2 = new CounterTask();
-    CounterTask task3 = new CounterTask();
+    TestCounterTask task1 = new TestCounterTask();
+    TestCounterTask task2 = new TestCounterTask();
+    TestCounterTask task3 = new TestCounterTask();
 
     // Build agent with tasks
     Agent agent = Agent.builder().task(task1).task(task2).task(task3).build();
@@ -72,8 +72,8 @@ public class AgentTest {
   @SneakyThrows
   public void testAgentWithTaskList() {
     // Test the tasks() method that takes a list instead of individual task() calls
-    CounterTask task1 = new CounterTask();
-    CounterTask task2 = new CounterTask();
+    TestCounterTask task1 = new TestCounterTask();
+    TestCounterTask task2 = new TestCounterTask();
 
     // Build using list
     Agent agent = Agent.builder().tasks(java.util.Arrays.asList(task1, task2)).build();
@@ -94,7 +94,7 @@ public class AgentTest {
   @SneakyThrows
   public void testMultipleStartStop() {
     // Create test task
-    CounterTask task = new CounterTask();
+    TestCounterTask task = new TestCounterTask();
 
     // Build agent
     Agent agent = Agent.builder().task(task).build();

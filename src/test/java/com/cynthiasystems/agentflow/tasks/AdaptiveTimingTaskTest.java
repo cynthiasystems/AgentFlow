@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 
-import com.cynthiasystems.agentflow.tasks.examples.AdaptiveTask;
+import com.cynthiasystems.agentflow.tasks.examples.TestAdaptiveTask;
 
 import lombok.SneakyThrows;
 
@@ -13,7 +13,7 @@ public class AdaptiveTimingTaskTest {
   @Test
   @SneakyThrows
   public void testInitialSleepTime() {
-    final AdaptiveTask task = new AdaptiveTask();
+    final TestAdaptiveTask task = new TestAdaptiveTask();
     assertEquals(100, task.estimatedSleepTime(), "Initial sleep time should be 100ms");
     task.start();
     Thread.sleep(100);
@@ -24,7 +24,7 @@ public class AdaptiveTimingTaskTest {
   @Test
   @SneakyThrows
   public void testAdaptiveAlgorithm() {
-    final AdaptiveTask task = new AdaptiveTask();
+    final TestAdaptiveTask task = new TestAdaptiveTask();
     task.start();
     Thread.sleep(100);
     task.shouldProcessFlag(false);

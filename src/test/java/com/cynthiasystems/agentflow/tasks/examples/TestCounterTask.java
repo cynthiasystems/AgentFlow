@@ -14,7 +14,7 @@ import lombok.experimental.NonFinal;
 @Accessors(fluent = true, chain = true)
 @Getter
 @FieldDefaults(level = AccessLevel.PRIVATE)
-public class CounterTask extends Task {
+public class TestCounterTask extends Task {
   // Counters to track method invocations
   final AtomicInteger processCount = new AtomicInteger(0);
   final AtomicInteger initializeCount = new AtomicInteger(0);

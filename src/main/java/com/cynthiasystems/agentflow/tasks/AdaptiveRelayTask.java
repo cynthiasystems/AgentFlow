@@ -8,7 +8,6 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import lombok.AccessLevel;
 import lombok.NonNull;
 import lombok.Singular;
-import lombok.SneakyThrows;
 import lombok.Synchronized;
 import lombok.experimental.Accessors;
 import lombok.experimental.FieldDefaults;
@@ -22,6 +21,10 @@ public class AdaptiveRelayTask<X, Y> extends AdaptiveTimingTask {
 
   Function<X, Y> expression;
 
+  public static <X, Y> AdaptiveRelayTask<X, Y> of(@NonNull final Function<X, Y> expression) {
+    return new AdaptiveRelayTask<>(expression);
+  }
+
   @SuppressFBWarnings("CT_CONSTRUCTOR_THROW")
   public AdaptiveRelayTask(@NonNull final Function<X, Y> expression) {
     this.expression = expression;
@@ -34,7 +37,6 @@ public class AdaptiveRelayTask<X, Y> extends AdaptiveTimingTask {
   }
 
   @Override
-  @SneakyThrows
   @Synchronized
   protected void process() {
     for (final X x : inbox) {
@@ -49,5 +51,20 @@ public class AdaptiveRelayTask<X, Y> extends AdaptiveTimingTask {
   @Synchronized
   public void accept(@NonNull final X message) {
     inbox.add(message);
+  }
+
+  @Synchronized
+  public void relay(@NonNull final AdaptiveRelayTask<Y, ?> relay) {
+    relays.add(relay);
+  }
+
+  @Synchronized
+  public X inboxEntry(final int index) {
+    return inbox.get(index);
+  }
+
+  @Synchronized
+  public int inboxSize() {
+    return inbox.size();
   }
 }

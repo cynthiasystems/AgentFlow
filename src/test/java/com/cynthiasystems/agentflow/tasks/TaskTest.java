@@ -4,8 +4,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 
-import com.cynthiasystems.agentflow.tasks.examples.CounterTask;
-import com.cynthiasystems.agentflow.tasks.examples.TrueTask;
+import com.cynthiasystems.agentflow.tasks.examples.TestCounterTask;
+import com.cynthiasystems.agentflow.tasks.examples.TestTrueTask;
 
 import lombok.SneakyThrows;
 
@@ -14,7 +14,7 @@ public class TaskTest {
   @SneakyThrows
   @Test
   public void taskStartsAndCreatesThread() {
-    final Task task = new TrueTask();
+    final Task task = new TestTrueTask();
     assertFalse(task.isThreadAlive());
     assertNull(task.getThreadName());
     task.start();
@@ -29,8 +29,8 @@ public class TaskTest {
   @Test
   public void testLifecycleAndProcessing() {
     // Initialize task with a process limit
-    final CounterTask task =
-        new CounterTask()
+    final TestCounterTask task =
+        new TestCounterTask()
             .processLimit(5) // Process only 5 times
             .sleepTime(10); // Sleep 10ms between iterations
 
@@ -64,7 +64,7 @@ public class TaskTest {
     assertTrue(task.processCount().get() > 5);
 
     // Test that direct run() call throws exception
-    final CounterTask illegalTask = new CounterTask();
+    final TestCounterTask illegalTask = new TestCounterTask();
     Exception exception = assertThrows(IllegalStateException.class, illegalTask::run);
     assertTrue(exception.getMessage().contains("start()"));
 

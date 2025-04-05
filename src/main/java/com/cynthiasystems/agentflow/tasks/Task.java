@@ -46,7 +46,7 @@ public abstract class Task implements Runnable {
     if (thread != null) {
       thread.interrupt();
       try {
-        thread.join(200);
+        thread.join();
       } catch (final InterruptedException e) {
         // Ignore
       }
