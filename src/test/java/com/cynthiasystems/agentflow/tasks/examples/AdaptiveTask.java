@@ -15,11 +15,10 @@ import lombok.experimental.NonFinal;
  */
 @Accessors(fluent = true)
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
+@Getter
 public class AdaptiveTask extends AdaptiveTimingTask {
-
-  @Getter @Setter @NonFinal boolean shouldProcessFlag = true;
-
-  @Getter @NonFinal int processCount = 0;
+  @Setter @NonFinal boolean shouldProcessFlag = true;
+  @NonFinal int processCount = 0;
 
   @Override
   protected boolean shouldProcess() {
