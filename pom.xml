@@ -6,7 +6,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.cynthiasystems</groupId>
 	<artifactId>AgentFlow</artifactId>
-	<version>1.0</version>
+	<version>1.0.0</version>
 	<url>https://github.com/cynthiasystems/AgentFlow</url>
 	<properties>
 		<checkstyle.version>10.12.5</checkstyle.version>
