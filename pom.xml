@@ -256,9 +256,14 @@
 									<element>BUNDLE</element>
 									<limits>
 										<limit>
-											<counter>INSTRUCTION</counter>
+											<counter>LINE</counter>
 											<value>COVEREDRATIO</value>
-											<minimum>0.70</minimum>
+											<minimum>1.00</minimum>
+										</limit>
+										<limit>
+											<counter>BRANCH</counter>
+											<value>COVEREDRATIO</value>
+											<minimum>1.00</minimum>
 										</limit>
 									</limits>
 								</rule>

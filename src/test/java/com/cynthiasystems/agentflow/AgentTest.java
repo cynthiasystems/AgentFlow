@@ -1,142 +1,234 @@
 package com.cynthiasystems.agentflow;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 
+import com.cynthiasystems.agentflow.tasks.ManualExecutor;
+import com.cynthiasystems.agentflow.tasks.RelayTask;
 import com.cynthiasystems.agentflow.tasks.Task;
-import com.cynthiasystems.agentflow.tasks.examples.TestCounterTask;
-
-import lombok.SneakyThrows;
+import com.cynthiasystems.agentflow.tasks.TaskState;
 
 public class AgentTest {
+  private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
   @Test
-  @SneakyThrows
-  public void testAgentStartsAndStopsAllTasks() {
-    // Create test tasks
-    TestCounterTask task1 = new TestCounterTask();
-    TestCounterTask task2 = new TestCounterTask();
-    TestCounterTask task3 = new TestCounterTask();
-
-    // Build agent with tasks
-    Agent agent = Agent.builder().task(task1).task(task2).task(task3).build();
-
-    // Verify initial state
-    assertFalse(task1.isThreadAlive());
-    assertFalse(task2.isThreadAlive());
-    assertFalse(task3.isThreadAlive());
-
-    // Start the agent
-    agent.start();
-
-    // Verify all tasks are started
-    assertTrue(task1.isThreadAlive());
-    assertTrue(task2.isThreadAlive());
-    assertTrue(task3.isThreadAlive());
-
-    // Let tasks run briefly
-    Thread.sleep(50);
-
-    // Verify tasks are processing
-    assertTrue(task1.processCount().get() > 0);
-    assertTrue(task2.processCount().get() > 0);
-    assertTrue(task3.processCount().get() > 0);
-
-    // Stop the agent
-    agent.stop();
-    Thread.sleep(100);
-
-    // Verify all tasks are stopped
-    assertFalse(task1.isThreadAlive());
-    assertFalse(task2.isThreadAlive());
-    assertFalse(task3.isThreadAlive());
-
-    // Verify lifecycle hooks were called
-    assertEquals(1, task1.beforeStartCount().get());
-    assertEquals(1, task1.afterStopCount().get());
-    assertEquals(1, task2.beforeStartCount().get());
-    assertEquals(1, task2.afterStopCount().get());
-    assertEquals(1, task3.beforeStartCount().get());
-    assertEquals(1, task3.afterStopCount().get());
-  }
-
-  @Test
-  public void testEmptyAgent() {
-    final Agent agent = Agent.builder().build();
-    agent.start();
-    agent.stop();
-  }
-
-  @Test
-  @SneakyThrows
-  public void testAgentWithTaskList() {
-    // Test the tasks() method that takes a list instead of individual task() calls
-    TestCounterTask task1 = new TestCounterTask();
-    TestCounterTask task2 = new TestCounterTask();
-
-    // Build using list
-    Agent agent = Agent.builder().tasks(java.util.Arrays.asList(task1, task2)).build();
-
-    // Start and verify
-    agent.start();
-    assertTrue(task1.isThreadAlive());
-    assertTrue(task2.isThreadAlive());
-
-    // Stop and verify
-    agent.stop();
-    Thread.sleep(100);
-    assertFalse(task1.isThreadAlive());
-    assertFalse(task2.isThreadAlive());
-  }
-
-  @Test
-  @SneakyThrows
-  public void testMultipleStartStop() {
-    // Create test task
-    TestCounterTask task = new TestCounterTask();
-
-    // Build agent
-    Agent agent = Agent.builder().task(task).build();
-
-    // First cycle
-    agent.start();
-    assertTrue(task.isThreadAlive());
-    agent.stop();
-    waitForThreadsToTerminate(new Task[] {task}, 1000);
-    assertFalse(task.isThreadAlive());
-    assertEquals(1, task.beforeStartCount().get());
-    assertEquals(1, task.afterStopCount().get());
-
-    // Second cycle - ensure complete cleanup before starting again
-    Thread.sleep(50); // Give a little extra time for cleanup
-    agent.start();
-    assertTrue(task.isThreadAlive());
-    agent.stop();
-    waitForThreadsToTerminate(new Task[] {task}, 1000);
-    assertFalse(task.isThreadAlive());
-    assertEquals(2, task.beforeStartCount().get());
-    assertEquals(2, task.afterStopCount().get());
-  }
-
-  /**
-   * Helper method to wait for threads to terminate with a timeout. This is more robust than a
-   * simple sleep.
-   */
-  @SneakyThrows
-  private void waitForThreadsToTerminate(Task[] tasks, long timeoutMs) {
-    long deadline = System.currentTimeMillis() + timeoutMs;
-    boolean allTerminated = false;
-
-    while (!allTerminated && System.currentTimeMillis() < deadline) {
-      allTerminated = true;
-      for (Task task : tasks) {
-        if (task.isThreadAlive()) {
-          allTerminated = false;
-          Thread.sleep(10);
-          break;
-        }
-      }
+  public void agentStartsStopsAndRestartsAllTasks() throws Exception {
+    final AtomicInteger total = new AtomicInteger();
+    final Semaphore delivered = new Semaphore(0);
+    final Function<Integer, Integer> increment =
+        value -> {
+          total.addAndGet(value);
+          delivered.release();
+          return value;
+        };
+    final Task<Integer> first = RelayTask.of(increment);
+    final Task<Integer> second = RelayTask.of(increment);
+    final Agent agent = Agent.builder().tasks(List.of(first, second)).parallelism(1).build();
+    try {
+      first.accept(1);
+      second.accept(2);
+      agent.start();
+      agent.start();
+      assertTrue(delivered.tryAcquire(2, 5, TimeUnit.SECONDS));
+      assertEquals(3, total.get());
+      assertEquals(TaskState.STARTED, first.state());
+      assertEquals(TaskState.STARTED, second.state());
+      agent.stop();
+      assertTrue(agent.awaitStopped(TIMEOUT));
+      assertEquals(TaskState.STOPPED, first.state());
+      assertEquals(TaskState.STOPPED, second.state());
+      agent.stop();
+      first.accept(3);
+      second.accept(4);
+      agent.start();
+      assertTrue(delivered.tryAcquire(2, 5, TimeUnit.SECONDS));
+      assertEquals(10, total.get());
+      assertEquals(TaskState.STARTED, first.state());
+    } finally {
+      agent.stop();
+      assertTrue(agent.awaitStopped(TIMEOUT));
     }
+  }
+
+  @Test
+  public void aSingleWorkerCanRunAnEntirePipeline() throws Exception {
+    final CountDownLatch delivered = new CountDownLatch(1);
+    final AtomicInteger result = new AtomicInteger();
+    final RelayTask<Integer, Integer> first = RelayTask.of(x -> x * 2);
+    final RelayTask<Integer, Integer> second = RelayTask.of(x -> x + 1);
+    final Task<Integer> sink =
+        new Task<>() {
+          @Override
+          protected void process(final Integer message) {
+            result.set(message);
+            delivered.countDown();
+          }
+        };
+    first.relay(second);
+    second.relay(sink);
+    first.accept(20);
+    final Agent agent = Agent.builder().task(first).task(second).task(sink).parallelism(1).build();
+    try {
+      agent.start();
+      assertTrue(delivered.await(5, TimeUnit.SECONDS));
+      assertEquals(41, result.get());
+    } finally {
+      agent.stop();
+      assertTrue(agent.awaitStopped(TIMEOUT));
+    }
+  }
+
+  @Test
+  public void shutdownSignalsAllTasksBeforeWaitingAndPreventsEarlyRestart() throws Exception {
+    final CountDownLatch entered = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Task<Integer> slow =
+        new Task<>() {
+          @Override
+          protected void process(final Integer message) throws InterruptedException {
+            entered.countDown();
+            assertTrue(release.await(5, TimeUnit.SECONDS));
+          }
+        };
+    final Task<Integer> other = RelayTask.of(x -> x);
+    final Agent agent = Agent.builder().task(slow).task(other).parallelism(1).build();
+    slow.accept(1);
+    try {
+      agent.start();
+      assertTrue(entered.await(5, TimeUnit.SECONDS));
+      agent.stop();
+      assertEquals(TaskState.STOPPING, slow.state());
+      assertEquals(TaskState.STOPPING, other.state());
+      assertFalse(agent.awaitStopped(Duration.ZERO));
+      assertThrows(IllegalStateException.class, agent::start);
+    } finally {
+      release.countDown();
+      agent.stop();
+      assertTrue(agent.awaitStopped(TIMEOUT));
+    }
+    assertEquals(TaskState.STOPPED, other.state());
+  }
+
+  @Test
+  public void taskFailureDoesNotStopOtherTasks() throws Exception {
+    final Task<Integer> broken =
+        RelayTask.of(
+            x -> {
+              throw new IllegalArgumentException("bad input");
+            });
+    final CountDownLatch delivered = new CountDownLatch(1);
+    final Task<Integer> healthy =
+        RelayTask.of(
+            x -> {
+              delivered.countDown();
+              return x;
+            });
+    final Agent agent = Agent.builder().task(broken).task(healthy).parallelism(1).build();
+    broken.accept(1);
+    healthy.accept(2);
+    try {
+      agent.start();
+      assertTrue(delivered.await(5, TimeUnit.SECONDS));
+      assertTrue(broken.awaitStopped(TIMEOUT));
+      assertEquals(TaskState.FAILED, broken.state());
+      assertEquals(TaskState.STARTED, healthy.state());
+    } finally {
+      agent.stop();
+      assertTrue(agent.awaitStopped(TIMEOUT));
+    }
+  }
+
+  @Test
+  public void invalidConfigurationIsRejectedAndEmptyAgentsAreSafe() throws Exception {
+    final Agent empty = Agent.builder().build();
+    empty.stop();
+    assertTrue(empty.awaitStopped(Duration.ZERO));
+    empty.start();
+    empty.stop();
+    assertTrue(empty.awaitStopped(TIMEOUT));
+    assertThrows(IllegalArgumentException.class, () -> Agent.builder().parallelism(-1).build());
+    assertThrows(IllegalArgumentException.class, () -> empty.awaitStopped(Duration.ofSeconds(-1)));
+    final Task<Integer> task = RelayTask.of(x -> x);
+    assertThrows(
+        IllegalArgumentException.class, () -> Agent.builder().task(task).task(task).build());
+  }
+
+  @Test
+  public void failedStartRollsBackPreviouslyStartedTasks() throws Exception {
+    final Task<Integer> owned = RelayTask.of(x -> x);
+    final Task<Integer> first = RelayTask.of(x -> x);
+    owned.start();
+    final Agent agent = Agent.builder().task(first).task(owned).build();
+    try {
+      assertThrows(IllegalStateException.class, agent::start);
+      assertTrue(first.awaitStopped(TIMEOUT));
+      assertEquals(TaskState.STOPPED, first.state());
+      assertEquals(TaskState.STARTED, owned.state());
+    } finally {
+      owned.stop();
+      assertTrue(owned.awaitStopped(TIMEOUT));
+      assertTrue(agent.awaitStopped(TIMEOUT));
+    }
+  }
+
+  @Test
+  public void builderSupportsClearingReusingAndEmptyCollections() throws Exception {
+    final Task<Integer> task = RelayTask.of(x -> x);
+    final Agent.AgentBuilder builder = Agent.builder();
+    assertTrue(builder.toString().contains("AgentBuilder"));
+    builder.clearTasks();
+    builder.tasks(List.of());
+    builder.tasks(List.of(task));
+    builder.clearTasks();
+    final Agent empty = builder.build();
+    empty.start();
+    empty.stop();
+    assertTrue(empty.awaitStopped(TIMEOUT));
+    builder.task(task);
+    assertTrue(builder.toString().contains("tasks"));
+    final Agent single = builder.build();
+    single.start();
+    single.stop();
+    assertTrue(single.awaitStopped(TIMEOUT));
+    assertThrows(NullPointerException.class, () -> Agent.builder().tasks(null));
+  }
+
+  @Test
+  public void awaitStoppedWaitsForExecutorTerminationAfterTaskHooksFinish() throws Exception {
+    final ManualExecutor executor = new ManualExecutor();
+    final Task<Integer> task = RelayTask.of(x -> x);
+    final Agent agent =
+        new Agent(
+            List.of(task),
+            1,
+            parallelism -> {
+              assertEquals(1, parallelism);
+              return executor;
+            });
+    agent.start();
+    executor.runNext();
+    task.stop();
+    executor.runNext();
+    assertTrue(task.awaitStopped(Duration.ZERO));
+    // An executor may still be finishing queued work after the task's stop latch is released.
+    final AtomicInteger completed = new AtomicInteger();
+    executor.execute(completed::incrementAndGet);
+    agent.stop();
+    assertFalse(agent.awaitStopped(Duration.ZERO));
+    executor.runNext();
+    assertTrue(agent.awaitStopped(Duration.ZERO));
+    assertEquals(1, completed.get());
   }
 }
