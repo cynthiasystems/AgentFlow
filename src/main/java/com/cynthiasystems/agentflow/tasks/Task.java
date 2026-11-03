@@ -51,6 +51,9 @@ public abstract class Task<X> {
     this(UUID.randomUUID().toString(), capacity);
   }
 
+  @SuppressFBWarnings(
+      value = "CT_CONSTRUCTOR_THROW",
+      justification = "Construction only validates configuration; no privileged resources")
   protected Task(final String name) {
     this(name, DEFAULT_MAILBOX_CAPACITY);
   }

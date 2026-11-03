@@ -1,6 +1,6 @@
 # AgentFlow
 
-A small Java 17 framework for asynchronous, message-driven task graphs. Each task has a bounded FIFO mailbox. Arriving messages schedule processing on an executor; idle tasks do no work and occupy no worker threads.
+A small Java 23 framework for asynchronous, message-driven task graphs. Each task has a bounded FIFO mailbox. Arriving messages schedule processing on an executor; idle tasks do no work and occupy no worker threads.
 
 ## Execution model
 
@@ -308,7 +308,20 @@ This is a breaking API change:
 
 ## Build and test
 
-Requires JDK 17 and Maven:
+Requires JDK 23 and Maven 3.6.3 or newer. Use [Azul Zulu JDK 23](https://www.azul.com/downloads/) for local development. The build targets Java 23 bytecode (`--release 23`); running the library and demos requires Java 23 or newer. Preview features are not enabled.
+
+Select JDK 23 for both your shell and your IDE's Maven runner. On macOS, after installing Zulu JDK 23:
+
+```sh
+export JAVA_HOME="$(/usr/libexec/java_home -v 23)"
+export PATH="$JAVA_HOME/bin:$PATH"
+java -version
+mvn -version
+```
+
+Both commands should report Java 23. On other platforms, set `JAVA_HOME` to the Zulu JDK 23 installation and put its `bin` directory first on `PATH`. Maven explicitly configures Lombok as an annotation processor to accommodate [Java 23's annotation-processing defaults](https://maven.apache.org/plugins/maven-compiler-plugin/compile-mojo.html#annotationProcessorPaths).
+
+Run the full verification suite:
 
 ```sh
 mvn clean verify

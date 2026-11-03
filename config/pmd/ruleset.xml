@@ -11,14 +11,13 @@
     <!-- Best Practices Rules -->
     <rule ref="category/java/bestpractices.xml">
         <exclude name="GuardLogStatement"/>
-        <exclude name="JUnitTestContainsTooManyAsserts"/>
+        <exclude name="UnitTestContainsTooManyAsserts"/>
         <exclude name="UseVarargs"/>
         <exclude name="SystemPrintln" />
     </rule>
 
     <!-- Error Prone Rules -->
     <rule ref="category/java/errorprone.xml">
-        <exclude name="DataflowAnomalyAnalysis"/>
         <exclude name="AvoidFieldNameMatchingMethodName"/>
         <exclude name="AvoidDuplicateLiterals"/>
     </rule>
