@@ -11,6 +11,8 @@ import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+
 /**
  * Combines one value from every subscribed publisher, independently for each request ID.
  *
@@ -20,7 +22,7 @@ import java.util.function.Consumer;
  */
 // Collection views and Pending values belong to this worker; policy and inputs are value records.
 @SuppressWarnings("PMD.LawOfDemeter")
-public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> {
+public class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> {
   private final Map<String, String> publishers = new LinkedHashMap<>();
   private final JoinPolicy policy;
   private final BiFunction<K, Map<String, V>, R> combine;
@@ -29,6 +31,7 @@ public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> 
   // These collections belong exclusively to the task worker, including during restart.
   private final Map<K, Pending<V>> pending = new LinkedHashMap<>();
   private final Set<K> finished = new LinkedHashSet<>();
+  private long observedCancellations;
   private JoinScheduler.Cancellation alarm = () -> {};
 
   public JoinTask(
@@ -39,6 +42,9 @@ public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> 
     this(name, policy, combine, onFailure, SystemJoinScheduler.INSTANCE);
   }
 
+  @SuppressFBWarnings(
+      value = "CT_CONSTRUCTOR_THROW",
+      justification = "Construction validates configuration and acquires no privileged resources")
   JoinTask(
       final String name,
       final JoinPolicy policy,
@@ -71,19 +77,24 @@ public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> 
   }
 
   @Override
-  void validateConfiguration() {
+  final void validateConfiguration() {
     if (publishers.isEmpty()) {
       throw new IllegalStateException("Join requires at least one subscribed publisher");
     }
   }
 
   @Override
-  protected void initialize() {
+  protected final void initialize() {
+    final long cancellations = cancellationCount();
+    if (observedCancellations != cancellations) {
+      pending.clear();
+      observedCancellations = cancellations;
+    }
     onSignal();
   }
 
   @Override
-  protected void process(final JoinInput<K, V> input) {
+  protected final void process(final JoinInput<K, V> input) {
     if (!Objects.equals(publishers.get(input.publisherName()), input.publisherId())) {
       throw new IllegalArgumentException("Unregistered publisher: " + input.publisherName());
     }
@@ -121,7 +132,7 @@ public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> 
   }
 
   @Override
-  protected void onSignal() {
+  protected final void onSignal() {
     expire(scheduler.nanoTime());
     scheduleNextDeadline();
   }
@@ -162,8 +173,11 @@ public final class JoinTask<K, V, R> extends PublishingTask<JoinInput<K, V>, R> 
   }
 
   @Override
-  protected void cleanup() {
+  protected final void cleanup() {
     alarm.cancel();
+    if (isCancellationRequested()) {
+      pending.clear();
+    }
     // Keep partial requests, original deadlines, and duplicate history for an in-memory restart.
   }
 

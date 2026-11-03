@@ -5,5 +5,6 @@ public enum TaskState {
   STARTED,
   STOPPING,
   STOPPED,
+  CANCELLED,
   FAILED
 }

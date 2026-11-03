@@ -1,9 +1,7 @@
 package com.cynthiasystems.agentflow.tasks;
 
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.Collection;
-import java.util.Deque;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -29,15 +27,14 @@ public abstract class Task<X> {
   private final String id = UUID.randomUUID().toString();
   private final String name;
   final TaskGraph graph = new TaskGraph();
-  private final Deque<X> inbox = new ArrayDeque<>();
-  private final int capacity;
+  private final TaskInbox<X> inbox;
   private volatile TaskState state = TaskState.CREATED;
   private volatile Throwable failure;
   private volatile CountDownLatch stopped = new CountDownLatch(0);
   private ExecutorService executor;
   private boolean ownsExecutor;
   private boolean scheduled;
-  private boolean signaled;
+  private final TaskCancellation cancellation = new TaskCancellation();
   private boolean initialized;
 
   @SuppressFBWarnings(
@@ -66,10 +63,7 @@ public abstract class Task<X> {
     if (name.isBlank()) {
       throw new IllegalArgumentException("Task name must not be blank");
     }
-    if (capacity <= 0) {
-      throw new IllegalArgumentException("Mailbox capacity must be positive");
-    }
-    this.capacity = capacity;
+    inbox = new TaskInbox<>(capacity, this::process, this::onAdvisory, this::onSignal, this::stop);
   }
 
   public final String name() {
@@ -130,6 +124,7 @@ public abstract class Task<X> {
       ownsExecutor = sharedExecutor == null;
       executor = ownsExecutor ? newExecutor() : sharedExecutor;
       initialized = false;
+      cancellation.reset();
       failure = null;
       stopped = new CountDownLatch(1);
       state = TaskState.STARTED;
@@ -155,10 +150,8 @@ public abstract class Task<X> {
     Objects.requireNonNull(message, "message");
     final boolean submit;
     synchronized (lock) {
-      if (inbox.size() == capacity) {
-        throw new RejectedExecutionException("Mailbox is full for task " + id);
-      }
-      inbox.addLast(message);
+      cancellation.requireAccepting();
+      inbox.add(message);
       submit = state == TaskState.STARTED && !scheduled;
       if (submit) {
         scheduled = true;
@@ -171,7 +164,69 @@ public abstract class Task<X> {
 
   public final int inboxSize() {
     synchronized (lock) {
-      return inbox.size();
+      return inbox.dataSize();
+    }
+  }
+
+  /**
+   * Accepts an optional message without contributing to join readiness. STOP has a reserved,
+   * coalesced slot; KILL immediately cancels and interrupts instead of waiting in the inbox.
+   */
+  public final void advise(final Object message) {
+    Objects.requireNonNull(message, "message");
+    if (message == TaskCommand.KILL) {
+      cancel();
+      return;
+    }
+    final boolean submit;
+    synchronized (lock) {
+      cancellation.requireAccepting();
+      inbox.advise(message);
+      submit = state == TaskState.STARTED && !scheduled;
+      if (submit) {
+        scheduled = true;
+      }
+    }
+    if (submit) {
+      submitWorker();
+    }
+  }
+
+  public final int advisoryInboxSize() {
+    synchronized (lock) {
+      return inbox.advisorySize();
+    }
+  }
+
+  /** Allows cleanup hooks to discard partial application state after cancellation. */
+  protected final boolean isCancellationRequested() {
+    return cancellation.requested();
+  }
+
+  /** Monotonic cancellation generation, including cancellation while stopped. */
+  protected final long cancellationCount() {
+    synchronized (lock) {
+      return cancellation.count();
+    }
+  }
+
+  private void cancel() {
+    boolean submit = false;
+    synchronized (lock) {
+      inbox.clear();
+      cancellation.request();
+      if (state == TaskState.STARTED || state == TaskState.STOPPING) {
+        state = TaskState.STOPPING;
+        if (!scheduled) {
+          scheduled = true;
+          submit = true;
+        }
+      } else {
+        state = TaskState.CANCELLED;
+      }
+    }
+    if (submit) {
+      submitWorker();
     }
   }
 
@@ -182,7 +237,7 @@ public abstract class Task<X> {
   protected final void signal() {
     final boolean submit;
     synchronized (lock) {
-      signaled = true;
+      inbox.signal();
       submit = state == TaskState.STARTED && !scheduled;
       if (submit) {
         scheduled = true;
@@ -228,49 +283,51 @@ public abstract class Task<X> {
     }
   }
 
-  // Null is an internal control-event marker, never an accepted user message.
-  @SuppressWarnings("PMD.NullAssignment")
+  // Inbox actions are produced by our own mailbox, not a foreign collaborator.
+  @SuppressWarnings("PMD.LawOfDemeter")
   private void runBatch() {
+    synchronized (lock) {
+      cancellation.acquire();
+    }
     try {
-      if (!initialized) {
+      if (!initialized && !cancellation.requested()) {
         beforeStart();
         initialize();
         initialized = true;
       }
       for (int count = 0; count < BATCH_SIZE; count++) {
-        final X message;
+        final TaskInbox.Action action;
         synchronized (lock) {
-          if (state != TaskState.STARTED || (inbox.isEmpty() && !signaled)) {
+          if (state != TaskState.STARTED) {
             break;
           }
-          // Null is reserved for a control notification; accept() rejects null messages.
-          message = signaled ? null : inbox.removeFirst();
-          signaled = false;
+          action = inbox.next();
         }
-        if (message == null) {
-          onSignal();
-        } else {
-          process(message);
+        if (action == null) {
+          break;
         }
+        action.run();
       }
     } catch (final Exception | Error e) {
-      finish(e);
+      finish(cancellation.processingFailure(e));
       return;
     }
 
     final boolean stopping;
     synchronized (lock) {
       stopping = state != TaskState.STARTED;
-      if (!stopping && inbox.isEmpty() && !signaled) {
-        // Enqueue and this transition share a lock, so an arrival cannot lose its wake-up.
-        scheduled = false;
-        return;
+      if (!stopping) {
+        // Release the thread before a new owner can be scheduled or interrupted.
+        cancellation.release();
+        if (inbox.isEmpty()) {
+          scheduled = false;
+          return;
+        }
       }
     }
     if (stopping) {
       finish(null);
     } else {
-      // Yield to other tasks, even if this mailbox receives messages continuously.
       submitWorker();
     }
   }
@@ -293,7 +350,8 @@ public abstract class Task<X> {
         executor.shutdown();
       }
       failure = problem;
-      state = problem == null ? TaskState.STOPPED : TaskState.FAILED;
+      state = problem == null ? cancellation.completedState() : TaskState.FAILED;
+      cancellation.release();
       scheduled = false;
       stopped.countDown();
     }
@@ -322,6 +380,9 @@ public abstract class Task<X> {
 
   /** Called after cleanup, even if cleanup fails. */
   protected void afterStop() {}
+
+  /** Handles an optional application message serially with data processing. */
+  protected void onAdvisory(final Object message) {}
 
   /** Handles a coalesced control notification on the worker. */
   protected void onSignal() {}

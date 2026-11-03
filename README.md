@@ -5,14 +5,14 @@ A small Java 17 framework for asynchronous, message-driven task graphs. Each tas
 ## Execution model
 
 - `Task<X>` receives messages through `accept(X)` and handles them in `process(X)`. Each task has an immutable `name()` and a unique instance `id()`; unnamed constructors generate a unique name.
-- Each task processes one message at a time, in mailbox order. Different tasks can run concurrently.
+- Each task processes one message at a time; data messages retain FIFO order, with advisory messages handled separately. Different tasks can run concurrently.
 - `RelayTask<X, Y>` transforms inputs and enqueues outputs in downstream tasks. Fan-out, fan-in, cycles, and self-relays are supported.
 - `JoinTask<K, V, R>` collects values by request ID and publishing task name, and combines them only when every subscribed publisher has contributed. Publisher names and instance IDs are attached automatically during forwarding.
 - `Agent` owns a shared executor for its tasks. By default, its worker count is the smaller of the task count and available processors, with a minimum of one. Set `parallelism(...)` to choose explicitly.
 - A worker handles at most 64 messages per turn before yielding to other scheduled tasks. It leaves the executor when its mailbox is empty; the next arrival schedules it again.
 - User processing and message forwarding run outside mailbox locks. `accept()` never invokes downstream processing inline.
 
-There is no polling loop, adaptive sleep, or dedicated thread per task. Mailboxes and task state are in memory; they are not persisted across process restarts.
+There is no polling loop or adaptive sleep. Agent-managed tasks share workers; standalone tasks may own an executor. Mailboxes and task state are in memory; they are not persisted across process restarts.
 
 ## Example
 
@@ -190,12 +190,81 @@ The default is **one shared worker**, demonstrating that waiting for missing inp
 java -cp target/classes com.cynthiasystems.agentflow.examples.DiamondDemo 4
 ```
 
+## Advisory messages and cancellation
+
+Advisories are optional inputs: they never add a required publisher or fill a join slot. Any task can receive `task.advise(message)` and override `onAdvisory(Object)` to handle application messages. The default handler ignores them. This works for `JoinTask` subclasses as well as ordinary tasks.
+
+A `PublishingTask` connects advisory subscribers with `publisher.relayAdvisories(subscriber)` and broadcasts from its processing code with `publishAdvisory(message)`. Advisory wiring freezes with the graph. A pair of nodes can have both a data subscription and an advisory subscription; only the data subscription contributes to join readiness. Broadcasts are direct to configured subscribers, not automatically forwarded around cycles.
+
+Each task has a separate inbox for up to 64 ordinary advisories. Overflow rejects immediately. Handlers run serially with data processing, so optional messages can safely update task-owned state. Control turns and data turns alternate when both have work; timeout notifications take precedence within control turns. Advisories do not interrupt an active computation.
+
+Two reserved framework commands have stronger semantics:
+
+| Command | Behavior |
+| --- | --- |
+| `task.advise(TaskCommand.STOP)` | Coalesces in a reserved slot even when both inboxes are full. Runs before further queued data or optional advice. Allows the current computation to finish, retains waiting messages and partial joins, and ends in `STOPPED`. |
+| `task.advise(TaskCommand.KILL)` | Immediately requests cancellation, clears both inboxes, rejects new submissions, and interrupts the task's active worker. It bypasses the inbox and never waits for advisory handling. Cleanup finishes before the state becomes `CANCELLED`. |
+
+KILL also discards incomplete join inputs; a cancelled join restarted explicitly begins without those partial inputs, including when KILL was received while already stopped. Finished-request history remains to prevent replay within its configured window. Cancellation does not roll back completed side effects. Cleanup failures still produce `FAILED`. Repeated KILL is safe; wait for `awaitStopped(...)` before restarting.
+
+**KILL is cooperative interruption, not guaranteed thread termination.** A callback that ignores interrupts or blocks in uninterruptible native code can remain in `STOPPING`. It may finish work already in progress. KILL targets the framework's active task worker, not arbitrary threads created by application code, and does not close a shared executor. Shut down the agent after its tasks stop. Java cannot safely guarantee “stop all threads no matter what”; that guarantee requires isolating work in a separate process that a supervisor can terminate. The framework does not use `Thread.stop()`.
+
+## Ten-worker feedback demo
+
+[LoopDemo](src/main/java/com/cynthiasystems/agentflow/examples/LoopDemo.java) has **ten computation nodes plus one Boolean control node**, and no collector. All computation nodes publish into a strongly connected feedback graph:
+
+| Worker | Required publishers |
+| --- | --- |
+| A | J, I |
+| B | A, J, I |
+| C | B, A, J, I |
+| D | C, B, A, J, I |
+| E | D, C |
+| F | E, D, C |
+| G | F, E, D, C |
+| H | G, F, E, D, C |
+| I | H, G |
+| J | I, H, G |
+
+The Boolean input is `true` to start and `false` to halt. Repeated `true` does not reseed the graph. The control node has a dedicated thread so it can send commands even when every computation worker is occupied. It broadcasts STOP to all ten workers on `false`, or KILL when its advisory inbox receives `LoopDemo.Control.KILL_ALL`.
+
+Cycles need initial values and a definition of time. Worker A starts at 1, B at 2, through J at 10. The controller seeds every feedback edge with that publisher's step-zero value and its registered name/instance ID. A node computing step `n` joins all required publishers' values from step `n - 1`. The request ID is the logical step, and automatic publication advances that ID by one. Out-of-order messages cannot mix iterations. Subsequent messages use normal subscription forwarding.
+
+For node number `i` (A = 1), each step computes `(31 * i + sum(publisherNumber * publisherValue)) % 1_000_003`. No worker waits for missing inputs. A conditional subscription, `publisher.relay(join, requestIdExtractor, publishWhen)`, suppresses feedback at the configured final step. The subscription still declares a required dependency; its predicate only controls publication. At the limit, all ten nodes have the same step and no next-step inputs are emitted.
+
+```sh
+mvn -q compile
+java -cp target/classes com.cynthiasystems.agentflow.examples.LoopDemo 1000
+```
+
+The demo sends `true`, waits for 1,000 logical steps, sends `false`, waits for shutdown, then prints each worker's step, value, lifecycle state, and inbox counts. The default limit is 100 steps.
+
+You can also interrupt early:
+
+```java
+try (LoopDemo loop = new LoopDemo(4, 100_000)) {
+    loop.start();
+    loop.input().accept(true);
+    // From an external event or a one-shot ScheduledExecutorService callback:
+    loop.input().accept(false); // Broadcast STOP.
+    // Alternatively: loop.input().advise(LoopDemo.Control.KILL_ALL);
+    if (!loop.awaitStopped(Duration.ofSeconds(5))) {
+        throw new IllegalStateException("Workers have not stopped");
+    }
+    System.out.println(loop.snapshot());
+}
+```
+
+For elapsed-time runs, schedule `loop.input().accept(false)` once after the desired duration and close the external scheduler during shutdown. A halt can leave nodes at different logical steps. `snapshot()` is stable after `awaitStopped` succeeds; during execution it is a per-node view, not an atomic graph-wide snapshot. STOP retains unfinished inputs; KILL clears them. Create a new `LoopDemo` for a fresh simulation.
+
+[LoopDemoTest](src/test/java/com/cynthiasystems/agentflow/examples/LoopDemoTest.java) checks 1,000 steps with 1, 2, 4, and 8 worker threads against an independent synchronous reference calculation. It also checks initial values, duplicate start, early STOP with an occupied worker, advisory KILL during blocked computation, per-node state/value snapshots, timeout reporting, and the runnable command. [AdvisoryTest](src/test/java/com/cynthiasystems/agentflow/tasks/AdvisoryTest.java) checks optional joins, inbox overflow, command priority, restart, cleanup failures, interrupt isolation on shared threads, and code that deliberately ignores interrupts.
+
 ## Lifecycle and shutdown
 
-Tasks move through `CREATED`, `STARTED`, `STOPPING`, and `STOPPED`. An exception during processing or a lifecycle hook ends the run in `FAILED`; `failure()` exposes its cause.
+Tasks move through `CREATED`, `STARTED`, `STOPPING`, and `STOPPED`; cancellation ends in `CANCELLED`. An exception during processing or a lifecycle hook ends the run in `FAILED`; `failure()` exposes its cause.
 
 - `start()` is idempotent while running. An agent starts all its tasks on its own pool. A standalone task's `start()` creates a single daemon worker executor; `start(executor)` uses an asynchronous executor owned by the caller.
-- `beforeStart()` and `initialize()` run once per start, before message processing, even if stop was requested before the worker began.
+- `beforeStart()` and `initialize()` run once per start, before message processing, even if ordinary stop was requested before the worker began. KILL received before initialization skips these hooks.
 - `stop()` requests shutdown and returns without waiting. A message already dequeued for processing is allowed to finish. Pending messages remain in the mailbox for a later restart; they are not drained automatically.
 - `cleanup()` and `afterStop()` run once when a started run stops or fails. Cleanup is attempted even if initialization fails. Hooks normally run on the executor; if scheduling is rejected, cleanup runs on the submitting thread. Hook failures are recorded, with additional failures attached as suppressed exceptions.
 - `awaitStopped(Duration)` waits for completion with a timeout and returns `false` if work is still running. It propagates interruption. Do not call it from a worker or hook belonging to the task or agent being awaited.
@@ -207,7 +276,7 @@ All internally created workers are daemon threads, so they do not keep the JVM a
 
 ## Capacity and failure semantics
 
-The default mailbox capacity is 1,024 waiting messages, excluding any message currently being processed. `accept()` accepts non-null messages before startup, while running, and after stop or failure. A full mailbox immediately throws `RejectedExecutionException`; enqueueing never waits for capacity.
+The default mailbox capacity is 1,024 waiting messages, excluding any message currently being processed. `accept()` accepts non-null messages before startup, while running, and after stop or failure. After KILL, submissions are rejected until an explicit restart. A full mailbox immediately throws `RejectedExecutionException`; enqueueing never waits for capacity.
 
 Processing failures stop that task, while other tasks remain runnable. The failed message has already been removed and is **not automatically retried**. Later messages remain queued. This prevents accidental replay of side effects; applications can implement their own retry or error-message policy in `process()`.
 
@@ -245,7 +314,61 @@ Requires JDK 17 and Maven:
 mvn clean verify
 ```
 
-Verification runs the unit tests, Checkstyle, PMD, duplicate-code detection, Spotless, SpotBugs, and JaCoCo gates requiring **100% line coverage and 100% branch coverage** across production code, including the demo, with no configured coverage exclusions. Tests use controlled executors, clocks, barriers, and latches to exercise idle wake-ups, FIFO ordering, concurrent producers, cyclic graphs, failures, and shutdown without fixed sleeps. Join tests cover out-of-order and overlapping requests, duplicates, exact timeout boundaries, a full mailbox at expiration, incomplete-request limits, bounded duplicate history, restart, and callback failures. Named-publisher tests also cover automatic identity, correlation, duplicate names/subscriptions, invalid publisher IDs, graph freezing, and chained joins. The diamond demo is tested with one and four shared workers; a separate integration test verifies that a real timer wakes an idle join.
+Verification runs the unit tests, Checkstyle, PMD, duplicate-code detection, Spotless, SpotBugs, and JaCoCo gates requiring **100% line coverage and 100% branch coverage** across production code, including both demos, with no configured coverage exclusions. Tests use controlled executors, clocks, barriers, and latches to exercise idle wake-ups, FIFO ordering, concurrent producers, cyclic graphs, failures, and shutdown without fixed sleeps. Join tests cover out-of-order and overlapping requests, duplicates, exact timeout boundaries, a full mailbox at expiration, incomplete-request limits, bounded duplicate history, restart, and callback failures. Named-publisher tests also cover automatic identity, correlation, duplicate names/subscriptions, invalid publisher IDs, graph freezing, and chained joins. The diamond demo is tested with one and four shared workers; a separate integration test verifies that a real timer wakes an idle join.
+
+### Complex graph stress test
+
+[ComplexGraphTest](src/test/java/com/cynthiasystems/agentflow/tasks/ComplexGraphTest.java) exercises **10 processing workers plus a result collector**. Four publishers feed six joins, with two joins each requiring two, three, and four inputs:
+
+| Join | Required publishers | Input count |
+| --- | --- | --- |
+| E | A, B | 2 |
+| F | B, C, D | 3 |
+| G | A, B, C, D | 4 |
+| H | E, F, C | 3 |
+| I | G, H | 2 |
+| J | I, E, F, G | 4 |
+
+```mermaid
+flowchart LR
+    A --> E
+    B --> E
+    B --> F
+    C --> F
+    D --> F
+    A --> G
+    B --> G
+    C --> G
+    D --> G
+    E --> H
+    F --> H
+    C --> H
+    G --> I
+    H --> I
+    I --> J
+    E --> J
+    F --> J
+    G --> J
+    J --> Collector
+```
+
+The default concurrent workload runs 256 distinct requests per scenario, across one, two, four, and eight shared worker threads and three fixed shuffle seeds. Two producer threads per source concurrently enqueue requests, including duplicates. A barrier forces four nodes to overlap in the larger pools. Every join checks its complete publisher set, each input's request ID, and its numerical value against independently expanded formulas. Per-node counters detect overlapping processing, duplicate joins, and lost inputs or outputs.
+
+Each scenario ends with a marker request sent after all producers finish. Its arrival at the collector confirms that every preceding publication, including duplicates, has passed through the graph before assertions and shutdown. Additional cases deliberately hold back D, restart with incomplete requests and replayed publications, and use controlled time to expire missing inputs without resurrecting them when late values arrive. All waits have timeouts; the tests use no fixed sleeps.
+
+Run the focused tests:
+
+```sh
+mvn test -Dtest=ComplexGraphTest
+```
+
+Increase the concurrent workload to 2,048 requests per scenario (24,576 distinct workload requests across 12 scenarios, plus completion markers):
+
+```sh
+mvn clean verify -Dagentflow.stress.requests=2048
+```
+
+Mailbox capacities and duplicate-history limits are sized for the finite test workload so these cases exercise concurrency and correlation. Separate tests check overflow and history eviction. These tests can reveal races and regressions; passing them, even with full code coverage, is not a proof that every possible thread interleaving is correct.
 
 ## License
 
